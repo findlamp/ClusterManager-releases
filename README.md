@@ -22,13 +22,33 @@ pip install https://github.com/findlamp/ClusterManager-releases/releases/downloa
 
 ## Quick Start
 
-Start `cm-node` on your Linux GPU server:
+### Single Node
 
 ```bash
-cm-node --uid=node-0 --bind-host=0.0.0.0 --port=50351 --token="your-token"
+cm-node --port=50351
 ```
 
-Then open **ClusterManager.app** on macOS and attach to `<server-ip>:50351` with the same token.
+### Multi-Node Cluster (Seed / Master Auto-Discovery)
+
+Start all nodes pointing to the same seed (`--master`). Each node registers itself automatically:
+
+```bash
+# Node 0 (seed/master, e.g. 10.0.0.1)
+cm-node --uid=node-0 --advertise-url=10.0.0.1:50351 --port=50351 --rank=0 --world-size=2 --master=10.0.0.1
+
+# Node 1 (e.g. 10.0.0.2; repeat for rank 2, 3, ...)
+cm-node --uid=node-1 --advertise-url=10.0.0.2:50351 --port=50351 --rank=1 --world-size=2 --master=10.0.0.1
+```
+
+If your cluster launcher already sets `RANK`, `WORLD_SIZE`, and `MASTER_ADDR` (e.g. Kubernetes / Slurm / TorchElastic), they are picked up automatically:
+
+```bash
+cm-node --uid="node-${RANK}" --advertise-url="$(hostname -I | awk '{print $1}'):50351" --port=50351
+```
+
+Open **ClusterManager.app** on macOS and attach to the single seed address (`10.0.0.1:50351`) — all nodes are discovered automatically.
+
+> On shared networks, optionally add `--token=<secret>` (or `CM_NODE_TOKEN`) to all nodes and enter the same token when attaching.
 
 ## Training Script Example (Breakpoint + Performance Monitor)
 
