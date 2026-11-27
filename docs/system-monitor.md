@@ -1,35 +1,37 @@
-# System Monitor 接入指南（`cm_sdk.sys`）
+# System Monitor Guide (`cm_sdk.sys`)
 
-在 **System Monitor** 画布中，各集群节点的 **GPU 利用率 / 显存 / 功耗 / CPU / 内存** 会由 `cm-node` 自动采集并汇总到本组 Rank-0，无需改代码。
+In **System Monitor**, hardware metrics (**GPU utilization, VRAM, power, CPU, memory**) are collected automatically by `cm-node` and aggregated on each Group's Rank-0 — no code changes required.
 
-如果需要展示 **生产 / 消费 / 吞吐速率、队列深度、组间连线带宽（GB/s & 累计 TB）**，以及在按拓扑启动时实现 **全节点（N/N）服务就绪后再拉起下游**，只需在业务代码里加入 2~4 行 `cm_sdk.sys` 调用：
+To report **produce / consume / throughput rates, queue depth, inter-group link bandwidth (GB/s & cumulative TB)**, and to gate **topological startup** until **all nodes (`N/N`)** in an upstream Group are ready, add 2–4 lines of `cm_sdk.sys`:
 
-- 与 `cm_sdk.track` **完全隔离**，不会污染 `Experiments` 曲线；
-- 零额外依赖（仅 Python 标准库），在非 ClusterManager 环境下自动静默 no-op；
-- 无需配置地址或 Group ID，`cm-node` 会自动注入 `CM_GROUP_ID`、`CM_LAUNCH_ID`、`CM_RANK`、`CM_PERF_INGEST_ADDR`。
+- **Decoupled from `cm_sdk.track`**: never writes to experiment directories or pollutes the `Experiments` panel.
+- **Zero dependencies**: Python stdlib only; silently no-ops when launched outside ClusterManager.
+- **Zero configuration**: `cm-node` injects `CM_GROUP_ID`, `CM_LAUNCH_ID`, `CM_RANK`, and `CM_PERF_INGEST_ADDR` automatically.
 
 ---
 
-## 1. 数据集群（DataGen / 数据服务）
+## 1. Data Service (DataGen / Rollout / Preprocessing)
 
-数据侧**不需要知道前端连到了哪个训练 Group**——只需上报本组发出了多少样本和字节数，你在前端画布把谁连到它后面，连线就会自动显示实时带宽（GB/s）与累计流量（TB）：
+The data service does **not** need to know which downstream Group it connects to. Simply report outbound sample counts and payload bytes — whichever Group you wire to it on the canvas automatically receives live bandwidth (`GB/s`, `Gbps`) and cumulative traffic (`TB`):
 
 ```python
 from cm_sdk import sys as cmsys
 
-# 1) 启动阶段（可选）
+# 1) Optional warmup status
 cmsys.starting("Initializing data service...")
 start_data_server(port=9100)
 
-# 2) 服务可对外接收请求时调用（每台节点都调用；集齐 N/N 自动拉起下游训练组）
+# 2) Signal readiness once accepting requests (call on every node;
+#    downstream Groups start automatically once N/N nodes report ready)
 cmsys.ready("Data service listening on :9100")
 
-# 3) 创建 1 Hz 自动滑窗计量器（无需填下游名称，由前端连线自动绑定）
+# 3) 1 Hz sliding-window meter (no downstream target name required)
 meter = cmsys.meter("produce", unit="samples/s", scope="node")
 
 for batch, payload_bytes in stream_batches():
     send_to_trainer(payload_bytes)
-    # 只要传入 size_bytes，内部自动同时上报「卡片生产速度 + 队列」与「连线带宽/累计流量」
+    # Passing `size_bytes` updates both the node's produce rate / queue
+    # and the connected edge's live bandwidth / total bytes
     meter.record(
         count=len(batch),
         size_bytes=len(payload_bytes),
@@ -37,16 +39,16 @@ for batch, payload_bytes in stream_batches():
     )
 ```
 
-> - **多输出流（1 拖 N）才需要 `target`**：仅当同一个数据集群在画布上**同时连出 2 条以上不同数据流**（例如一路给 `train`、一路给 `eval`）且希望各连线分别显示不同速率时，才需要用 `cmsys.link(target="eval")` 或 `cmsys.meter("produce", target="eval")` 区分流名称（与下游 Group 名或前端连线标签一致即可）。
-> - **多进程 / Ray Actor 注意**：`scope="node"` 按机器（`node_uid`）聚合，**同机多个进程各自调 `scope="node"` 会互相覆盖**。如果单机跑了多个发包进程或 Ray Actor，建议汇总到单个中心进程 / Driver 后用 `scope="group"` 统一上报一次。
+> - **1-to-N fan-out (optional `target`)**: Only when a single data Group fans out to **2+ distinct downstream edges** (e.g., `train` and `eval`) with separate streams do you need `cmsys.link(target="eval")` or `cmsys.meter("produce", target="eval")` (matched against the downstream Group name or the edge label in the Inspector).
+> - **Multi-process / Ray actors**: `scope="node"` deduplicates by machine (`node_uid`), so multiple processes on the same host calling `scope="node"` will overwrite each other. When running multiple sender processes or Ray actors, aggregate in a single driver/coordinator and report once with `scope="group"`.
 
 ---
 
-## 2. 训练集群（Training）
+## 2. Training Cluster
 
-分布式训练通常每机多卡（如 8 卡 `torchrun`）：
-- 每台机器仅 `LOCAL_RANK == 0` 上报一次 `ready`；
-- 仅全局 `RANK == 0` 使用 `scope="group"` 上报全局吞吐，避免 8 卡 / 多机重复累加。
+For multi-GPU distributed training (e.g. `torchrun` with 8 GPUs per node):
+- Call `cmsys.ready(...)` once per node (`LOCAL_RANK == 0`).
+- Report global throughput from global `RANK == 0` with `scope="group"` to avoid double-counting across GPUs/nodes.
 
 ```python
 import os
@@ -57,11 +59,11 @@ global_rank = int(os.environ.get("RANK", "0"))
 
 init_distributed_and_model()
 
-# 1) 每台节点 local_rank == 0 报就绪
+# 1) One ready signal per node
 if local_rank == 0:
     cmsys.ready("Trainer initialized")
 
-# 2) 全局 Rank 0 用 scope="group" 上报整组消费速度（samples/s、tok/s 或 steps/s）
+# 2) Global Rank 0 reports cluster-wide consume rate (samples/s, tok/s, or steps/s)
 meter = (
     cmsys.meter("consume", unit="samples/s", scope="group")
     if global_rank == 0
@@ -74,22 +76,24 @@ for step, batch in enumerate(dataloader):
         meter.record(count=global_batch_size, status=f"step {step}")
 ```
 
-如果训练框架内部已经算好全局 `tokens_per_second` 或 `steps_per_second`，也可以在全局 Rank 0 直接调用 `cmsys.report(...)`：
+If your training framework already computes global `tokens_per_sec` or `steps_per_sec`, you can call `cmsys.report(...)` directly on global Rank 0:
 
 ```python
 if global_rank == 0:
     cmsys.report(
         consume_rate=tokens_per_sec,
         consume_unit="tok/s",
-        secondary_label="训练进度",
+        secondary_label="Progress",
         secondary_value=f"step {step}",
         scope="group",
     )
 ```
 
+> Note: `cmsys.report(...)` sends immediately on each call (unthrottled), whereas `meter.record(...)` throttles automatically to at most 1 Hz (`interval_s=1.0`). The UI refreshes from Rank-0 every 2 seconds.
+
 ---
 
-## 3. 推理 / 评测集群（Inference / Eval）
+## 3. Inference / Evaluation Cluster
 
 ```python
 from cm_sdk import sys as cmsys
@@ -104,43 +108,43 @@ def on_request_done(num_tokens: int, latency_ms: float):
     meter.record(count=num_tokens, status=f"{latency_ms:.0f}ms")
 ```
 
-> **不改代码的替代方案**（如直接跑 `vLLM` / `SGLang` 命令行）：在 System Monitor 右侧 Inspector 中把就绪检测改为 **`HTTP 健康检查 (GET)`**（如端口 `8000` + 路径 `/health`）、**`TCP 端口监听`** 或 **`终端日志关键字匹配`**，即可零改动参与拓扑启动。
+> **Zero-code readiness alternative** (e.g. off-the-shelf `vLLM` / `SGLang`): In the right-hand Inspector, set readiness mode to **`http_get`** (e.g. port `8000`, path `/health`), **`tcp_port`**, or **`log_regex`** to participate in topological startup without editing server code.
 
 ---
 
-## 4. API 速查表
+## 4. API Quick Reference
 
-### Python SDK（`from cm_sdk import sys as cmsys`）
+### Python SDK (`from cm_sdk import sys as cmsys`)
 
-| API | 用途 |
+| API | Description |
 | --- | --- |
-| `cmsys.starting(msg)` | 标记本节点正在初始化（`ready=False`） |
-| `cmsys.ready(msg)` | 标记本节点服务已就绪；Rank-0 集齐 `N/N` 后放行下游 |
-| `cmsys.not_ready(msg)` | 清除本节点就绪标记 |
-| `cmsys.meter(role="consume", unit="samples/s", scope="node")` | 返回 1 Hz 滑窗 `RateMeter`（`role`: `"produce"` / `"consume"` / `"throughput"`）；传入 `size_bytes` 时自动上报默认出向连线流量，无需指定下游名称 |
-| `cmsys.link(target="default", unit="samples/s", scope="node")` | 多流分发（1 拖 N）时显式指定流名称 `target`，匹配下游 Group 名或前端连线标签 |
-| `meter.record(count=0, size_bytes=0, queue=None, status=None, flush=False)` | 记录本次处理的样本/token 数与发送字节数，自动 1 Hz 限频上报 |
-| `cmsys.report(produce_rate=..., consume_rate=..., throughput=..., queue=..., secondary_label=..., secondary_value=..., scope="node")` | 直接推送已计算好的瞬时速率 |
-| `cmsys.report_link(target, bytes_per_s=..., total_bytes=..., items_per_s=..., scope="node")` | 直接推送连线实时速率与累计字节数 |
-| `cmsys.check_readiness(server_url, cluster_id, group_id, mode="sdk_ready")` | 外部脚本单次查询某 Group 全节点就绪状态 |
-| `cmsys.wait_ready(server_url, cluster_id, group_id, mode="sdk_ready", timeout_s=300)` | 外部脚本阻塞等待某 Group 全节点就绪 |
+| `cmsys.starting(msg)` | Mark this node as warming up (`ready=False`) |
+| `cmsys.ready(msg)` | Mark this node as ready; topological startup advances once `N/N` nodes are ready |
+| `cmsys.not_ready(msg)` | Clear this node's ready flag |
+| `cmsys.meter(role="consume", unit="samples/s", scope="node")` | Create a 1 Hz sliding-window `RateMeter` (`role`: `"produce"` / `"consume"` / `"throughput"`); passing `size_bytes` automatically feeds outbound link traffic |
+| `cmsys.link(target="default", unit="samples/s", scope="node")` | Explicit stream-targeted `RateMeter` for 1-to-N fan-out |
+| `meter.record(count=0, size_bytes=0, queue=None, status=None, flush=False)` | Record processed count and/or bytes; automatically throttled to `interval_s` (default `1.0s`) |
+| `cmsys.report(produce_rate=..., consume_rate=..., throughput=..., queue=..., secondary_label=..., secondary_value=..., scope="node")` | Push pre-computed instantaneous rates immediately |
+| `cmsys.report_link(target="default", bytes_per_s=..., total_bytes=..., items_per_s=..., scope="node")` | Push instantaneous link bandwidth and cumulative bytes immediately |
+| `cmsys.check_readiness(server_url, cluster_id, group_id, mode="sdk_ready")` | Check all-nodes (`N/N`) readiness of a Group from an external script |
+| `cmsys.wait_ready(server_url, cluster_id, group_id, mode="sdk_ready", timeout_s=300)` | Block until all nodes in a Group are ready (raises on error/timeout) |
 
-### `scope` 选择规则
+### Choosing `scope`
 
-| `scope` | Rank-0 聚合行为 | 适用场景 |
+| `scope` | Rank-0 Aggregation | When to Use |
 | --- | --- | --- |
-| `"node"`（默认） | 按节点求和 | 每台机器有 1 个上报进程，各报本机速率/流量 |
-| `"group"` | 直接使用该值 | 单点已知全局汇总值（如训练 Rank 0 或 Ray Driver） |
+| `"node"` (default) | Summed across nodes | One reporting process per host, each reporting local rate/bytes |
+| `"group"` | Used directly as cluster total | Single coordinator already knows the global total (e.g. training Rank 0 or Ray driver) |
 
-### HTTP 就绪检测与拓扑控制接口（`cm-server`，默认 `127.0.0.1:50052`）
+### Control-Plane HTTP API (`cm-server`, default `127.0.0.1:50052`)
 
 ```bash
-# 检测某 Group 全节点（N/N）服务是否就绪
+# Check all-nodes (N/N) service readiness for a Group
 curl -s -X POST http://127.0.0.1:50052/api/clusters/<cluster_id>/groups/<group_id>/readiness \
   -H 'Content-Type: application/json' \
   -d '{"mode":"sdk_ready","rank0_only":false}'
 
-# 后端按拓扑顺序启动 / 逆拓扑停止 / 取消编排
+# Start in topological order / stop in reverse order / cancel orchestration
 curl -s -X POST http://127.0.0.1:50052/api/system/blueprints/<id>/start
 curl -s -X POST http://127.0.0.1:50052/api/system/blueprints/<id>/stop
 curl -s -X POST http://127.0.0.1:50052/api/system/blueprints/<id>/cancel

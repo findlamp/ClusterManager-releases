@@ -67,4 +67,4 @@ for step, batch in enumerate(loader):
 
 ## Documentation
 
-- [System Monitor 接入指南（数据 / 训练 / 推理上报与服务就绪）](docs/system-monitor.md)
+- [System Monitor Guide (Data / Training / Inference Telemetry & Readiness)](docs/system-monitor.md)
