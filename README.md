@@ -64,3 +64,7 @@ for step, batch in enumerate(loader):
     monitor.flush(step, enable=(step % 10 == 0), metadata={"loss": float(loss)})
     dbg.breakpoint("after-step")
 ```
+
+## Documentation
+
+- [System Monitor 接入指南（数据 / 训练 / 推理上报与服务就绪）](docs/system-monitor.md)
