@@ -69,9 +69,9 @@ meter = (
 )
 
 for step, batch in enumerate(dataloader):
-    loss = train_step(batch)
+    train_step(batch)
     if meter is not None:
-        meter.add(items=global_batch_size, status=f"step {step} · loss {loss:.3f}")
+        meter.add(items=global_batch_size, status=f"step {step}")
 ```
 
 如果训练框架内部已经算好全局 `tokens_per_second` 或 `steps_per_second`，也可以在全局 Rank 0 直接调用 `cmsys.report(...)`：
@@ -82,7 +82,7 @@ if global_rank == 0:
         consume_rate=tokens_per_sec,
         consume_unit="tok/s",
         secondary_label="训练进度",
-        secondary_value=f"step {step} · loss {loss:.3f}",
+        secondary_value=f"step {step}",
         scope="group",
     )
 ```
