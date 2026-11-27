@@ -12,7 +12,7 @@
 
 ## 1. 数据集群（DataGen / 数据服务）
 
-使用 `cmsys.link(target)` 可用 **1 个对象** 同时上报「生产速度 + 缓冲队列 + 连线实时带宽（GB/s）与累计流量（TB）」：
+数据侧**不需要知道前端连到了哪个训练 Group**——只需上报本组发出了多少样本和字节数，你在前端画布把谁连到它后面，连线就会自动显示实时带宽（GB/s）与累计流量（TB）：
 
 ```python
 from cm_sdk import sys as cmsys
@@ -24,20 +24,21 @@ start_data_server(port=9100)
 # 2) 服务可对外接收请求时调用（每台节点都调用；集齐 N/N 自动拉起下游训练组）
 cmsys.ready("Data service listening on :9100")
 
-# 3) 创建 1 Hz 自动滑窗计量器：target 填画布中下游 Group 名称（单出边时也可自动匹配）
-link = cmsys.link(target="train-group", unit="samples/s", scope="node")
+# 3) 创建 1 Hz 自动滑窗计量器（无需填下游名称，由前端连线自动绑定）
+meter = cmsys.meter("produce", unit="samples/s", scope="node")
 
 for batch, payload_bytes in stream_batches():
     send_to_trainer(payload_bytes)
-    # 线程安全，内部每 1 秒自动汇总上报一次，不阻塞热路径
-    link.add(
+    # 只要传入 nbytes，内部自动同时上报「卡片生产速度 + 队列」与「连线带宽/累计流量」
+    meter.add(
         items=len(batch),
         nbytes=len(payload_bytes),
         queue=f"{buf_queue.qsize()}/{buf_queue.maxsize}",
     )
 ```
 
-> **多进程 / Ray Actor 注意**：`scope="node"` 按机器（`node_uid`）聚合，**同机多个进程各自调 `scope="node"` 会互相覆盖**。如果单机跑了多个发包进程或 Ray Actor，建议汇总到单个中心进程 / Driver 后用 `scope="group"` 统一上报一次。
+> - **多输出流（1 拖 N）才需要 `target`**：仅当同一个数据集群在画布上**同时连出 2 条以上不同数据流**（例如一路给 `train`、一路给 `eval`）且希望各连线分别显示不同速率时，才需要用 `cmsys.link(target="eval")` 或 `cmsys.meter("produce", target="eval")` 区分流名称（与下游 Group 名或前端连线标签一致即可）。
+> - **多进程 / Ray Actor 注意**：`scope="node"` 按机器（`node_uid`）聚合，**同机多个进程各自调 `scope="node"` 会互相覆盖**。如果单机跑了多个发包进程或 Ray Actor，建议汇总到单个中心进程 / Driver 后用 `scope="group"` 统一上报一次。
 
 ---
 
@@ -116,8 +117,8 @@ def on_request_done(num_tokens: int, latency_ms: float):
 | `cmsys.starting(msg)` | 标记本节点正在初始化（`ready=False`） |
 | `cmsys.ready(msg)` | 标记本节点服务已就绪；Rank-0 集齐 `N/N` 后放行下游 |
 | `cmsys.not_ready(msg)` | 清除本节点就绪标记 |
-| `cmsys.link(target, unit="samples/s", scope="node")` | 返回 1 Hz 滑窗 `RateMeter`，同时上报卡片生产速度与连线带宽/累计流量 |
-| `cmsys.meter(role="consume", unit="samples/s", scope="node")` | 返回 1 Hz 滑窗 `RateMeter`，仅上报当前卡片速率（`role`: `"produce"` / `"consume"` / `"throughput"`） |
+| `cmsys.meter(role="consume", unit="samples/s", scope="node")` | 返回 1 Hz 滑窗 `RateMeter`（`role`: `"produce"` / `"consume"` / `"throughput"`）；传入 `nbytes` 时自动上报默认出向连线流量，无需指定下游名称 |
+| `cmsys.link(target="default", unit="samples/s", scope="node")` | 多流分发（1 拖 N）时显式指定流名称 `target`，匹配下游 Group 名或前端连线标签 |
 | `meter.add(items=0, nbytes=0, queue=None, status=None, flush=False)` | 累计本次样本数与字节数，自动 1 Hz 限频上报 |
 | `cmsys.report(produce_rate=..., consume_rate=..., throughput=..., queue=..., secondary_label=..., secondary_value=..., scope="node")` | 直接推送已计算好的瞬时速率 |
 | `cmsys.report_link(target, bytes_per_s=..., total_bytes=..., items_per_s=..., scope="node")` | 直接推送连线实时速率与累计字节数 |
