@@ -29,10 +29,10 @@ meter = cmsys.meter("produce", unit="samples/s", scope="node")
 
 for batch, payload_bytes in stream_batches():
     send_to_trainer(payload_bytes)
-    # 只要传入 nbytes，内部自动同时上报「卡片生产速度 + 队列」与「连线带宽/累计流量」
-    meter.add(
-        items=len(batch),
-        nbytes=len(payload_bytes),
+    # 只要传入 size_bytes，内部自动同时上报「卡片生产速度 + 队列」与「连线带宽/累计流量」
+    meter.record(
+        count=len(batch),
+        size_bytes=len(payload_bytes),
         queue=f"{buf_queue.qsize()}/{buf_queue.maxsize}",
     )
 ```
@@ -71,7 +71,7 @@ meter = (
 for step, batch in enumerate(dataloader):
     train_step(batch)
     if meter is not None:
-        meter.add(items=global_batch_size, status=f"step {step}")
+        meter.record(count=global_batch_size, status=f"step {step}")
 ```
 
 如果训练框架内部已经算好全局 `tokens_per_second` 或 `steps_per_second`，也可以在全局 Rank 0 直接调用 `cmsys.report(...)`：
@@ -101,7 +101,7 @@ cmsys.ready("Inference ready on :8000")
 meter = cmsys.meter("throughput", unit="tok/s", scope="node")
 
 def on_request_done(num_tokens: int, latency_ms: float):
-    meter.add(items=num_tokens, status=f"{latency_ms:.0f}ms")
+    meter.record(count=num_tokens, status=f"{latency_ms:.0f}ms")
 ```
 
 > **不改代码的替代方案**（如直接跑 `vLLM` / `SGLang` 命令行）：在 System Monitor 右侧 Inspector 中把就绪检测改为 **`HTTP 健康检查 (GET)`**（如端口 `8000` + 路径 `/health`）、**`TCP 端口监听`** 或 **`终端日志关键字匹配`**，即可零改动参与拓扑启动。
@@ -117,9 +117,9 @@ def on_request_done(num_tokens: int, latency_ms: float):
 | `cmsys.starting(msg)` | 标记本节点正在初始化（`ready=False`） |
 | `cmsys.ready(msg)` | 标记本节点服务已就绪；Rank-0 集齐 `N/N` 后放行下游 |
 | `cmsys.not_ready(msg)` | 清除本节点就绪标记 |
-| `cmsys.meter(role="consume", unit="samples/s", scope="node")` | 返回 1 Hz 滑窗 `RateMeter`（`role`: `"produce"` / `"consume"` / `"throughput"`）；传入 `nbytes` 时自动上报默认出向连线流量，无需指定下游名称 |
+| `cmsys.meter(role="consume", unit="samples/s", scope="node")` | 返回 1 Hz 滑窗 `RateMeter`（`role`: `"produce"` / `"consume"` / `"throughput"`）；传入 `size_bytes` 时自动上报默认出向连线流量，无需指定下游名称 |
 | `cmsys.link(target="default", unit="samples/s", scope="node")` | 多流分发（1 拖 N）时显式指定流名称 `target`，匹配下游 Group 名或前端连线标签 |
-| `meter.add(items=0, nbytes=0, queue=None, status=None, flush=False)` | 累计本次样本数与字节数，自动 1 Hz 限频上报 |
+| `meter.record(count=0, size_bytes=0, queue=None, status=None, flush=False)` | 记录本次处理的样本/token 数与发送字节数，自动 1 Hz 限频上报 |
 | `cmsys.report(produce_rate=..., consume_rate=..., throughput=..., queue=..., secondary_label=..., secondary_value=..., scope="node")` | 直接推送已计算好的瞬时速率 |
 | `cmsys.report_link(target, bytes_per_s=..., total_bytes=..., items_per_s=..., scope="node")` | 直接推送连线实时速率与累计字节数 |
 | `cmsys.check_readiness(server_url, cluster_id, group_id, mode="sdk_ready")` | 外部脚本单次查询某 Group 全节点就绪状态 |
