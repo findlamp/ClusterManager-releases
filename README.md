@@ -65,6 +65,24 @@ for step, batch in enumerate(loader):
     dbg.breakpoint("after-step")
 ```
 
+## MCP Server (Antigravity / Codex / Gemini CLI)
+
+While `ClusterManager.app` (or headless `cm-server`) is running, it exposes a built-in Streamable HTTP MCP server at `http://127.0.0.1:50052/mcp`.
+
+```bash
+# Antigravity CLI (agy)
+agy mcp add cluster http://127.0.0.1:50052/mcp
+
+# Codex CLI
+codex mcp add clustermanager --url http://127.0.0.1:50052/mcp
+
+# Gemini CLI
+gemini mcp add --scope user --transport http clustermanager http://127.0.0.1:50052/mcp
+```
+
+- **Read-only tools** (clusters, workers, logs, GPU usage, `py-spy` stacks, PerfMonitor, Perfetto, experiments) are always available.
+- **Write / control tools** (`set_training_command`, `start_training`, `stop_training`, `kill_training`, breakpoints) require toggling **Agent Control** ON on the target Task Group card in ClusterManager.
+
 ## Documentation
 
 - [System Monitor Guide (Data / Training / Inference Telemetry & Readiness)](docs/system-monitor.md)
