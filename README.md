@@ -68,3 +68,4 @@ for step, batch in enumerate(loader):
 ## Documentation
 
 - [System Monitor Guide (Data / Training / Inference Telemetry & Readiness)](docs/system-monitor.md)
+- [cm-node gRPC Protocol (`proto/cm.proto`)](proto/cm.proto) — direct gRPC interface for `cm-node` (`authorization: Bearer <token>`, optional Seed L7 proxy header `x-cm-target-node`)
