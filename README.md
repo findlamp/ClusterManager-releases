@@ -8,7 +8,7 @@ Download the latest binaries from **[Releases](https://github.com/findlamp/Clust
 
 ### 1. macOS Client (Apple Silicon)
 
-Download `ClusterManager-0.2.5-arm64.dmg` from [Releases](https://github.com/findlamp/ClusterManager-releases/releases/latest), drag `ClusterManager.app` into `/Applications`, then run once before first launch:
+Download `ClusterManager-0.2.6-arm64.dmg` from [Releases](https://github.com/findlamp/ClusterManager-releases/releases/latest), drag `ClusterManager.app` into `/Applications`, then run once before first launch:
 
 ```bash
 xattr -cr /Applications/ClusterManager.app
@@ -17,7 +17,7 @@ xattr -cr /Applications/ClusterManager.app
 ### 2. Linux Server (`x86_64`, Python 3.8+)
 
 ```bash
-pip install https://github.com/findlamp/ClusterManager-releases/releases/download/v0.2.5/clustermanager-0.2.5-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+pip install https://github.com/findlamp/ClusterManager-releases/releases/download/v0.2.6/clustermanager-0.2.6-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
 ```
 
 ## Quick Start
@@ -81,7 +81,7 @@ gemini mcp add --scope user --transport http clustermanager http://127.0.0.1:500
 ```
 
 - **Read-only tools** (clusters, workers, logs, GPU usage, `py-spy` stacks, PerfMonitor, Perfetto, experiments) are always available.
-- **Write / control tools** (`set_training_command`, `start_training`, `stop_training`, `kill_training`, breakpoints) require toggling **Agent Control** ON on the target Task Group card in ClusterManager.
+- **Write / control tools** (`set_group_command`, `start_group`, `stop_group`, `kill_group`, breakpoints) follow a strict two-step contract (`set_group_command` → `start_group`) and prompt for centered in-app approval (`Deny` / `Allow Once` / `Allow Session`) scoped per `Mcp-Session-Id`. Authorized external sessions appear as revocable tags on the target Task Group card.
 
 ## Documentation
 
